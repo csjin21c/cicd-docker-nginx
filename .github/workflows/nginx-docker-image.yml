@@ -1,18 +1,57 @@
-name: Docker Image CI
+name: Nginx Deployment Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
 
 jobs:
-
-  build:
-
+  build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --- [CI 영역: Nginx는 별도의 빌드 과정이 보통 필요 없으나 Linting 정도는 가능합니다] ---
+      # HTML이나 설정 파일의 문법 검사가 필요 없다면 이 섹션은 생략 가능합니다.
+
+      # --- [CD 영역 시작: 도커 이미지 생성] ---
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5 # 최신 버전 권장
+        with:
+          context: .
+          push: true
+          # Dockerfile 구조에 맞춰 이미지 이름을 nginx-app으로 설정했습니다.
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/nginx-app:latest
+
+      # --- [CD 영역 시작: EC2 실 배포] ---
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            # 1. 최신 이미지 가져오기
+            sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/nginx-app:latest
+
+            # 2. 기존 컨테이너 중지 및 삭제
+            sudo docker stop nginx-server || true
+            sudo docker rm nginx-server || true
+
+            # 3. Dockerfile의 EXPOSE 80에 맞춰 80번 포트로 실행
+            # 외부 80포트를 컨테이너 80포트로 연결합니다.
+            sudo docker run -d --name nginx-server -p 80:80 ${{ secrets.DOCKERHUB_USERNAME }}/nginx-app:latest
+
+            # 4. (선택사항) 사용하지 않는 오래된 이미지 정리
+            sudo docker image prune -f
